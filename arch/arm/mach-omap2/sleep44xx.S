@@ -609,7 +609,15 @@ mmu_on_label:
 	orreq	r8, r8, #MMU_OFFSET0		@ Get address of entry that..
 	orrne	r8, r8, #MMU_OFFSET1		@ was modified
 	ldr	r2, [r8, #TABLE_ADDRESS_OFFSET]
+#ifdef CONFIG_ARM_PATCH_PHYS_VIRT
+	ldr	r3, =__pv_phys_offset
+	ldr	r3, [r3]
+	mov	r4, #PAGE_OFFSET
+	sub 	r3, r4, r3			@ r3 <= PAGE_OFFSET - PHYS_OFFSET
+#else
+	.equ	local_va2pa_offet, (PAGE_OFFSET - PLAT_PHYS_OFFSET)
 	ldr	r3, =local_va2pa_offet
+#endif
 	add	r2, r2, r3
 	ldr	r0, [r8]			@ Get the previous value..
 	str	r0, [r2]			@ which needs to be restored
@@ -626,8 +634,6 @@ mmu_on_label:
 	isb
 
 	ldmfd	sp!, {r0-r12, pc}		@ restore regs and return
-
-	.equ	local_va2pa_offet, (PLAT_PHYS_OFFSET + PAGE_OFFSET)
 
 ENDPROC(omap4_cpu_resume)
 
