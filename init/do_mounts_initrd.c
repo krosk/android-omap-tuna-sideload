@@ -11,6 +11,9 @@
 #include "do_mounts.h"
 
 unsigned long initrd_start, initrd_end;
+#ifdef CONFIG_INITRD_RELOCATION
+unsigned long initrd_source;
+#endif
 int initrd_below_start_ok;
 unsigned int real_root_dev;	/* do_proc_dointvec cannot handle kdev_t */
 static int __initdata old_fd, root_fd;

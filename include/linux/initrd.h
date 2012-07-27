@@ -15,6 +15,9 @@ extern int initrd_below_start_ok;
 
 /* free_initrd_mem always gets called with the next two as arguments.. */
 extern unsigned long initrd_start, initrd_end;
+#ifdef CONFIG_INITRD_RELOCATION
+extern unsigned long initrd_source;
+#endif
 extern void free_initrd_mem(unsigned long, unsigned long);
 
 extern unsigned int real_root_dev;

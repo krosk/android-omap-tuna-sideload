@@ -21,6 +21,20 @@ config INITRAMFS_SOURCE
 
 	  If you are not sure, leave it blank.
 
+config INITRD_RELOCATION
+	bool "Enable initrd relocation"
+	depends on BLK_DEV_INITRD
+	depends on BLK_DEV_RAM
+	default "n"
+	help
+	  This setting will copy the content of the provided address
+	  to the provided initrd address using "initrd=" boot parameter.
+	  The syntax is:
+	  initrd=<initrd_source>,<initrd_size>,<initrd_relocated>
+
+	  If the third argument is not provided, it will be ignored,
+	  and the source will be used as the start address.
+
 config INITRAMFS_ROOT_UID
 	int "User ID to map to 0 (user root)"
 	depends on INITRAMFS_SOURCE!=""

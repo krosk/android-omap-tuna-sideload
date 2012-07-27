@@ -36,6 +36,9 @@
 
 static unsigned long phys_initrd_start __initdata = 0;
 static unsigned long phys_initrd_size __initdata = 0;
+#ifdef CONFIG_INITRD_RELOCATION
+static unsigned long phys_initrd_source __initdata = 0;
+#endif
 
 static int __init early_initrd(char *p)
 {
@@ -44,10 +47,22 @@ static int __init early_initrd(char *p)
 
 	start = memparse(p, &endp);
 	if (*endp == ',') {
+#ifndef CONFIG_INITRD_RELOCATION
 		size = memparse(endp + 1, NULL);
 
 		phys_initrd_start = start;
 		phys_initrd_size = size;
+#else
+		size = memparse(endp + 1, &endp);
+		if (*endp == ',') {
+			phys_initrd_start = memparse(endp + 1, NULL);
+			phys_initrd_source = start;
+		} else {
+			phys_initrd_start = start;
+			phys_initrd_source = 0;
+		}
+		phys_initrd_size = size;
+#endif
 	}
 	return 0;
 }
@@ -342,6 +357,25 @@ void __init arm_memblock_init(struct meminfo *mi, struct machine_desc *mdesc)
 		       phys_initrd_start, phys_initrd_size);
 		phys_initrd_start = phys_initrd_size = 0;
 	}
+#ifdef CONFIG_INITRD_RELOCATION
+	if (phys_initrd_size &&
+	    !memblock_is_region_memory(phys_initrd_source, phys_initrd_size)) {
+		pr_err("INITRD: 0x%08lx+0x%08lx is not a memory region - don't relocate\n",
+		       phys_initrd_source, phys_initrd_size);
+		phys_initrd_source = 0;
+	}
+	if (abs(phys_initrd_source - phys_initrd_start) <= phys_initrd_size) {
+		pr_err("INITRD: 0x%08lx-0x%08lx overlaps 0x%08lx - don't relocate\n",
+		       phys_initrd_start, phys_initrd_size, phys_initrd_source);
+		phys_initrd_source = 0;
+		/* Notice : Both zone must NOT be overlapping. We are expecting
+		   the source to get overwritten anytime.*/
+	}
+	if (phys_initrd_size && phys_initrd_source) {
+		memblock_reserve(phys_initrd_source, phys_initrd_size);
+		initrd_source = __phys_to_virt(phys_initrd_source);
+	}
+#endif
 	if (phys_initrd_size) {
 		memblock_reserve(phys_initrd_start, phys_initrd_size);
 

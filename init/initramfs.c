@@ -578,6 +578,13 @@ static int __init populate_rootfs(void)
 #ifdef CONFIG_BLK_DEV_RAM
 		int fd;
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
+#ifdef CONFIG_INITRD_RELOCATION
+		if (initrd_source) {
+			printk(KERN_INFO "Getting image from 0x%08lx...\n", initrd_source);
+			memcpy((void *) initrd_start, (void *) initrd_source,
+			       initrd_end - initrd_start);
+		}
+#endif
 		err = unpack_to_rootfs((char *)initrd_start,
 			initrd_end - initrd_start);
 		if (!err) {
