@@ -1385,7 +1385,7 @@ static void __init tuna_reserve(void)
 
 MACHINE_START(TUNA, "Tuna")
 	/* Maintainer: Google, Inc */
-	.boot_params	= 0x80000100,
+	.atag_offset	= 0x100,
 	.reserve	= tuna_reserve,
 	.map_io		= tuna_map_io,
 	.init_early	= tuna_init_early,
