@@ -88,5 +88,11 @@
 /* Override the ARM default */
 #define CONSISTENT_DMA_SIZE		(14 * SZ_1M)
 
+/* Definition for sparsemem and memory hotplug */
+#ifdef CONFIG_SPARSEMEM
+#define MAX_PHYSMEM_BITS 32
+#define SECTION_SIZE_BITS 24
+#endif
+
 #endif
 

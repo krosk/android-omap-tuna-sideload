@@ -1348,6 +1348,13 @@ static void __init tuna_init(void)
 		omap4_ehci_init();
 	}
 #endif
+#ifdef CONFIG_SPARSEMEM
+	/* WORKAROUND
+	   Free then remove this range from RAM so it can be safely
+	   ioremapped (ioremap of RAM range is an illegal operation) */
+	memblock_free(PHYS_ADDR_DUCATI_MEM, PHYS_ADDR_DUCATI_SIZE);
+	memblock_remove(PHYS_ADDR_DUCATI_MEM, PHYS_ADDR_DUCATI_SIZE);
+#endif
 }
 
 static void __init tuna_map_io(void)
@@ -1364,7 +1371,17 @@ static void __init tuna_reserve(void)
 	/* do the static reservations first */
 	memblock_remove(TUNA_RAMCONSOLE_START, TUNA_RAMCONSOLE_SIZE);
 	memblock_remove(PHYS_ADDR_SMC_MEM, PHYS_ADDR_SMC_SIZE);
+#ifdef CONFIG_SPARSEMEM
+	/* WORKAROUND
+	   Later, a mem_map for PHYS_ADDR_DUACTI_MEM is requested
+	   over the course of rpmsg initialization. If we remove
+	   this block immediately, no mem_map is generated,
+	   resulting in an address fault. This zone should be
+	   removed from memory once the mem_map has been generated. */
+	memblock_reserve(PHYS_ADDR_DUCATI_MEM, PHYS_ADDR_DUCATI_SIZE);
+#else
 	memblock_remove(PHYS_ADDR_DUCATI_MEM, PHYS_ADDR_DUCATI_SIZE);
+#endif
 
 	for (i = 0; i < tuna_ion_data.nr; i++)
 		if (tuna_ion_data.heaps[i].type == ION_HEAP_TYPE_CARVEOUT ||

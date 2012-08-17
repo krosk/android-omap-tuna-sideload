@@ -52,6 +52,8 @@ config ARCH_OMAP4
 	select PM_OPP if PM
 	select USB_ARCH_HAS_EHCI
 	select ARCH_HAS_BARRIERS
+	select ARCH_FLATMEM_ENABLE
+	select ARCH_SPARSEMEM_ENABLE
 
 comment "OMAP Core Type"
 	depends on ARCH_OMAP2
