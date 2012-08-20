@@ -134,6 +134,50 @@ start:
  THUMB(		.thumb			)
 1:		mov	r7, r1			@ save architecture ID
 		mov	r8, r2			@ save atags pointer
+#ifdef CONFIG_FAST_SWITCH
+#include <asm/fast_switch.h>
+		.equ	fsw_base, FSW_BASE
+		.equ	fsw_magic_value, FSW_MAGIC_VALUE
+		.equ	blank_value, BLANK_VALUE
+		.equ	flag_value, FSW_FLAG_VALUE
+		.equ	magic, 0x016f2818
+
+		ldr	r3, =fsw_base		@ r3 = FSW BASE
+		ldr	r5, =fsw_magic_value
+		ldr	r6, [r3, #FSW_MAGIC]
+		cmp	r6, r5
+		bne	skip_switch 		@ no magic, no action
+
+		ldr	r4, =blank_value	@ r4 = BLANK VALUE, for reset
+		ldr	r5, =flag_value
+		ldr	r6, [r3, #FSW_FLAG]	@ r6 = trigger flag
+		cmp	r6, r5
+		str	r4, [r3, #FSW_FLAG]	@ reset flag to avoid rogue jumps
+		bne	skip_switch		@ skip if not triggered
+
+		/* Check if we are asking for a boot */
+		ldr	r5, [r3, #FSW_MODE]
+		cmp	r5, #FSW_MODE_BOOT
+		bne	skip_switch
+
+		/*
+		 * Assumption: if MODE and FLAG have correct values, this MUST mean
+		 * that TARG, INST_JUMP and INST_BOOT are valid. Otherwise, we crash.
+		 * We only check if there is effectively a zImage at target address.
+		 */
+		ldr	r5, [r3, #FSW_TARG]
+		lsl	r5, #FSW_INST_SHIFT
+		add	r3, r5, r3		@ r3 = instance base
+		ldr	r6, [r3, #FSW_INST_JUMP] @ r6 = destination addr
+		ldr	r2, [r3, #FSW_INST_BOOT] @ r2 = target atags pointer
+
+		ldr	r5, [r6, #ARM_ZIMAGE_MAGIC_OFFSET]
+		ldr	r4, =magic		@ r4 magic number
+		cmp	r4, r5
+		@ optional, erase JUMP
+		moveq	pc, r6			@ jump if there is magic
+skip_switch:
+#endif
 
 #ifndef __ARM_ARCH_2__
 		/*

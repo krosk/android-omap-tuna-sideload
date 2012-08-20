@@ -40,6 +40,13 @@ config SHARP_PARAM
 config SHARP_SCOOP
 	bool
 
+config FAST_SWITCH
+	bool "Linux Fast Switch (EXPERIMENTAL)"
+	depends on EXPERIMENTAL
+	depends on SUSPEND
+	help
+	  Fast switching between two kernels, based on suspend.
+
 config FIQ_GLUE
 	bool
 	select FIQ

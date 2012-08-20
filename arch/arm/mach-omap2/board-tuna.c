@@ -71,7 +71,11 @@
 #include "resetreason.h"
 #include <mach/dmm.h>
 
-#define TUNA_RAMCONSOLE_START	(PLAT_PHYS_OFFSET + SZ_512M)
+#ifdef CONFIG_FAST_SWITCH
+#include <asm/fast_switch.h>
+#endif
+
+#define TUNA_RAMCONSOLE_START	(0x80000000 + SZ_512M + SZ_2M)
 #define TUNA_RAMCONSOLE_SIZE	SZ_2M
 
 struct class *sec_class;
@@ -1259,6 +1263,58 @@ static void tuna_power_off(void)
 	arm_pm_restart('c', NULL);
 }
 
+#ifdef CONFIG_FAST_SWITCH
+static int __init tuna_fsw_init(void)
+{
+	void __iomem *fsw_inst_base = NULL, *sar_backup = NULL;
+	int i;
+
+	fsw_init();
+
+	if (fsw_disabled())
+		return -1;
+
+	fsw_inst_base = fsw_instance(fsw_base->current_instance);
+
+	/* Below code is architecture/platform dependant */
+
+	/* write the resume address */
+	/* TODO: this address should be registered at boot by a callback,
+	   not hardcoded maybe? */
+	__raw_writel(virt_to_phys(omap4_cpu_resume),
+		     fsw_inst_base + FSW_INST_JUMP);
+	__raw_writel(virt_to_phys(omap4_cpu_resume),
+		     fsw_inst_base + FSW_INST_JUMP+4);
+
+	pr_info("Fastswitch: resume address at 0x%p [0x%08x] (core0)\n",
+		 fsw_inst_base + FSW_INST_JUMP,
+	         virt_to_phys(omap4_cpu_resume));
+
+	/* save the list of registers to keep during suspend */
+	/* Board dependant */
+	sar_backup = fsw_inst_base + FSW_INST_REGS;
+	for (i = 0; i < 15; i += 1)
+	{
+		__raw_writel(OMAP44XX_SAR_RAM_BASE + 0xb00 + i*0x4,
+		     sar_backup);
+		__raw_writel(OMAP44XX_SAR_RAM_BASE + 0xc00 + i*0x4,
+		     sar_backup + 0x8);
+		sar_backup += 0x10;
+	}
+	for (i = 0; i < 16; i += 1)
+	{
+		__raw_writel(OMAP44XX_SAR_RAM_BASE + 0xd00 + i*0x4,
+		     sar_backup);
+		sar_backup += 0x8;
+	}
+	__raw_writel(BLANK_VALUE, sar_backup);
+	pr_debug("Fastswitch: Blank tag added at %p\n",
+			 sar_backup);
+
+	return 0;
+}
+#endif
+
 static void __init tuna_init(void)
 {
 	int package = OMAP_PACKAGE_CBS;
@@ -1348,6 +1404,9 @@ static void __init tuna_init(void)
 		omap4_ehci_init();
 	}
 #endif
+#ifdef CONFIG_FAST_SWITCH
+	tuna_fsw_init();
+#endif
 #ifdef CONFIG_SPARSEMEM
 	/* WORKAROUND
 	   Free then remove this range from RAM so it can be safely
@@ -1381,6 +1440,24 @@ static void __init tuna_reserve(void)
 	memblock_reserve(PHYS_ADDR_DUCATI_MEM, PHYS_ADDR_DUCATI_SIZE);
 #else
 	memblock_remove(PHYS_ADDR_DUCATI_MEM, PHYS_ADDR_DUCATI_SIZE);
+#endif
+
+#ifdef CONFIG_FAST_SWITCH
+/* Notice : this is not necessary for children kernel... */
+#define TUNA_KERNIMG_START 	PHYS_OFFSET + 0x1808000
+#define TUNA_KERNIMG_SIZE	0x3BF000
+#define TUNA_KERNTAG_START 	PHYS_OFFSET + 0x0000
+#define TUNA_KERNTAG_SIZE 	0x1000
+#define TUNA_MISC1_START 	PHYS_OFFSET + 0x1bc7000	/* I suspect it is extracted data */
+#define TUNA_MISC1_SIZE 	0x443000
+#define TUNA_MISC2_START 	PHYS_OFFSET + 0x8008000
+#define TUNA_MISC2_SIZE 	0x480000
+	fsw_reserve(TUNA_KERNIMG_START, TUNA_KERNIMG_SIZE);
+	fsw_reserve(TUNA_KERNTAG_START, TUNA_KERNTAG_SIZE);
+	fsw_reserve(TUNA_MISC1_START, TUNA_MISC1_SIZE);
+	fsw_reserve(TUNA_MISC2_START, TUNA_MISC2_SIZE);
+	/* Mandatory for every board */
+	fsw_reserve(FSW_BASE, PAGE_SIZE);
 #endif
 
 	for (i = 0; i < tuna_ion_data.nr; i++)

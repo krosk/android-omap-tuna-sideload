@@ -25,6 +25,10 @@
 #include <linux/syscore_ops.h>
 #include <trace/events/power.h>
 
+#ifdef CONFIG_FAST_SWITCH
+#include <asm/fast_switch.h>
+#include <linux/fs.h>
+#endif
 #include "power.h"
 
 const char *const pm_states[PM_SUSPEND_MAX] = {
@@ -138,6 +142,125 @@ static int suspend_enter(suspend_state_t state)
 {
 	int error;
 
+#ifdef CONFIG_FAST_SWITCH
+	void __iomem *img_base = NULL;
+	void __iomem *fsw_inst_base = NULL;
+	int i;
+
+	/* fsw_base should have been allocated at boot */
+	if (fsw_disabled()) {
+		pr_err("Fastswitch: failed to map Fast Switch page\n");
+		goto endswitch;
+	}
+
+	/* Note: if fsw_base is defined, fsw is also */
+	switch (fsw_base->switch_mode) {
+	case FSW_MODE_BOOT:
+		goto boot_mode;
+	case FSW_MODE_SUSPEND:
+		goto suspend_mode;
+	default:
+		pr_info("Fastswitch: no switch detected\n");
+		goto skipswitch;
+	}
+
+boot_mode:
+	/* Instance number must be specified correctly (2..MAX),
+	   otherwise we can't retrieve a JUMP address */
+	if ((fsw_base->target_instance > FSW_INST_MAX) ||
+	    (fsw_base->target_instance <= 1)) {
+		pr_err("Fastswitch: switch-booting mode, specify an instance number"
+			 " (read %d)\n", fsw_base->target_instance);
+		goto skipswitch;
+	}
+
+	fsw_inst_base = fsw_instance(fsw_base->target_instance);
+
+	pr_info("Fastswitch: boot mode, instance %d (params at %p)\n",
+		 fsw_base->target_instance, fsw_inst_base);
+
+	/* FSW_INST_JUMP must be within the physical ram range, since we will want to
+	   map it. TODO This is a hard limit that should be detected somewhere... */
+	if (__raw_readl(fsw_inst_base + FSW_INST_JUMP) > 0xAC000000 ||
+	    __raw_readl(fsw_inst_base + FSW_INST_JUMP) < 0x80000000) {
+		pr_err("Fastswitch: zImage address [0x%08x] is out of limits\n",
+			 __raw_readl(fsw_inst_base + FSW_INST_JUMP));
+		__raw_writel(BLANK_VALUE, fsw_inst_base + FSW_INST_JUMP);
+		goto skipswitch;
+	}
+
+	/* Apply a page mask before ioremap */
+	//*(fsw_base + FSW_JUMP) = *(fsw_base + FSW_JUMP) & PAGE_MASK;
+
+	/* image must be outside the active ram ? because ioremap doesn't work on ram.
+	   mapping size should be higher than magic number offset 0x24, otherwise
+	   can't check for magic number */
+	img_base = ioremap(__raw_readl(fsw_inst_base + FSW_INST_JUMP), PAGE_SIZE);
+	if (!img_base) {
+		pr_err("Fastswitch: failed to map image at [0x%x]\n",
+			 __raw_readl(fsw_inst_base + FSW_INST_JUMP));
+		goto skipswitch;
+	}
+
+	/* detect magic number presence */
+	/* TODO we are in architecture independant code. Ideally, this code should
+	   not be there. */
+	if (__raw_readl(img_base + ARM_ZIMAGE_MAGIC_OFFSET) != ARM_ZIMAGE_MAGIC) {
+		pr_err("Fastswitch: Failed to find magic number for zImage [0x%08x]\n",
+			 __raw_readl(fsw_inst_base + FSW_INST_JUMP));
+		fsw_base->allow_core[0] = 0;
+		goto skipswitch;
+	}
+	pr_info("Fastswitch: Found zImage at [0x%08x], ready to switch-boot\n",
+		 __raw_readl(fsw_inst_base + FSW_INST_JUMP));
+	fsw_base->allow_core[0] = FSW_FLAG_VALUE;
+
+	goto endswitch;
+suspend_mode:
+       /* Instance number must be specified correctly (1..MAX), otherwise
+	   we can't retrieve a jump address */
+	if ((fsw_base->target_instance > FSW_INST_MAX) ||
+	    (fsw_base->target_instance <= 0)) {
+		pr_err("Fastswitch: switch-suspend mode, specify an instance number"
+			 " (read %d)\n", fsw_base->target_instance);
+		goto skipswitch;
+	}
+
+	fsw_inst_base = fsw_instance(fsw_base->target_instance);
+
+	pr_info("Fastswitch: switch-suspend mode, boot instance %x (params at %p)\n",
+		 fsw_base->target_instance, fsw_inst_base);
+
+	/* FSW_INST_JUMP must be within the physical ram range. This is a hard
+	   limit that should be detected somewhere... */
+	/* TODO: make a check for every address */
+	if (__raw_readl(fsw_inst_base + FSW_INST_JUMP) > 0xAC000000 ||
+	    __raw_readl(fsw_inst_base + FSW_INST_JUMP) < 0x80000000) {
+		pr_err("Fastswitch: core0 switch address [0x%08x] is out of limits\n",
+			 __raw_readl(fsw_inst_base + FSW_INST_JUMP));
+		__raw_writel(BLANK_VALUE, fsw_inst_base + FSW_INST_JUMP);
+		goto skipswitch;
+	}
+
+	/* everything looks ok, jump */
+	/* write one flag for every core */
+	for_each_present_cpu(i) {
+		fsw_base->allow_core[i] = FSW_FLAG_VALUE;
+	}
+	pr_info("Fastswitch: ready to switch-suspend to instance %d\n",
+		fsw_base->target_instance);
+
+	goto endswitch;
+
+skipswitch:
+	fsw_base->switch_mode = FSW_MODE_NULL;
+endswitch:
+	//if (fsw_base)
+	//	iounmap(fsw_base);
+	if (img_base)
+		iounmap(img_base);
+#endif
+
 	if (suspend_ops->prepare) {
 		error = suspend_ops->prepare();
 		if (error)
@@ -191,6 +314,39 @@ static int suspend_enter(suspend_state_t state)
 	if (suspend_ops->finish)
 		suspend_ops->finish();
 
+#ifdef CONFIG_FAST_SWITCH
+	//fsw_base = ioremap(FSW_BASE, PAGE_SIZE);
+	if (fsw_base) {
+		if (error) {
+			pr_info("Fastswitch: suspend did not occur, cancelling\n");
+			fsw_base->switch_mode 		= FSW_MODE_NULL;
+			fsw_base->target_instance 	= 0;
+			for_each_present_cpu(i) {
+				fsw_base->allow_core[i] = 0;
+			}
+		} else if (fsw_base->switch_mode == FSW_MODE_SUSPEND) {
+			/* Post switch-suspend processing */
+			if (error) {
+				pr_info("Fastswitch: resumed from instance %d"
+					 " to instance %d\n", fsw_base->current_instance,
+					 fsw_base->target_instance);
+			} else {
+				pr_info("Fastswitch: resumed from instance %d"
+					 " to instance %d\n", fsw_base->current_instance,
+					 fsw_base->target_instance);
+			}
+			fsw_base->current_instance = fsw_base->target_instance;
+			fsw_base->target_instance = 0;
+			fsw_base->switch_mode = FSW_MODE_NULL;
+
+			/* notify that the device must go out of dormant state */
+			request_suspend_state(PM_SUSPEND_ON);
+		}
+		//iounmap(fsw_base);
+	}
+	else
+		pr_err("Fastswitch: failed to map Fast Switch page\n");
+#endif
 	return error;
 }
 

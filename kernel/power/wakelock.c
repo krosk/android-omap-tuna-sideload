@@ -22,6 +22,10 @@
 #ifdef CONFIG_WAKELOCK_STAT
 #include <linux/proc_fs.h>
 #endif
+#ifdef CONFIG_FAST_SWITCH
+#include <asm/fast_switch.h>
+#include <linux/io.h>
+#endif
 #include "power.h"
 
 enum {
@@ -235,6 +239,15 @@ static long has_wake_lock_locked(int type)
 	struct wake_lock *lock, *n;
 	long max_timeout = 0;
 
+#ifdef CONFIG_FAST_SWITCH
+	if (fsw_base &&
+	    ((fsw_base->switch_mode == FSW_MODE_SUSPEND) ||
+	    fsw_base->switch_mode == FSW_MODE_BOOT) &&
+	    (fsw_base->skip_wakelock == FSW_WAKELOCK_SKIP)) {
+		pr_info("Fastswitch: WARNING, wakelock still active\n");
+		return 0;
+	}
+#endif
 	BUG_ON(type >= WAKE_LOCK_TYPE_COUNT);
 	list_for_each_entry_safe(lock, n, &active_wake_locks[type], link) {
 		if (lock->flags & WAKE_LOCK_AUTO_EXPIRE) {

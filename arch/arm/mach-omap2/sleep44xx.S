@@ -20,6 +20,8 @@
 
 #include "omap4-sar-layout.h"
 
+#include <asm/fast_switch.h>
+
 #ifdef CONFIG_SMP
 
 /* Masks used for MMU manipulation */
@@ -47,15 +49,8 @@
 	smc     #0
 .endm
 
-/*
- * To load POR which was saved in SAR RAM
- */
-POR_params:
-.word 1, 0
 
 
-ppa_zero_params:
-	.word		0x0
 
 /*
  * =============================
@@ -264,6 +259,119 @@ sync:
 #endif
 
 do_WFI:
+#ifdef CONFIG_FAST_SWITCH
+
+	/* This portion of the code is fully launched only when the
+	 * platform is ready to suspend. It will not be executed every
+	 * times. Therefore, the checking of the MMU flag (or anything
+	 * else) only is enough to prevent accidental jump.
+	 * One potential error would be if the platform would have failed
+	 * to jump.
+	 * Other cores are expected to power off, so let them go do the
+	 * normal WFI operation.
+	 * core0 will wait for them to be off before disabling the MMU
+	 */
+
+	mrc	p15, 0, r3, c0, c0, 5	@ Get cpuID
+	ands 	r3, r3, #0xf
+	bne	skip_mmuoff
+
+	/* Below code is executed by core0 only */
+	mrc 	p15, 0, r0, c2, c0, 0
+	ldr 	r3, =TTRBIT_MASK
+	and 	r0, r3			@ r0 <= trans-table base addr
+
+	ldr	r1, =fsw_base
+	ldr	r1, [r1]
+	cmp	r1, #0
+	beq	skip_mmuoff		@ skip if ioremap failed
+
+	mrc     p15, 0, r3, c0, c0, 5	@ Get cpuID (not necessary actually)
+	ands 	r3, r3, #0xf
+	lsl 	r3, #2
+	add 	r3, #FSW_FLAG		@ r3 = core flag offset
+
+	ldr 	r4, =FSW_FLAG_VALUE
+	ldr 	r5, [r1, r3]		@ = core flag value
+	cmp	r4, r5
+	bne	skip_mmuoff		@ if no flag, the core skips
+
+	mov 	r1, pc			@ we want to be around there, 0xC006BEXX
+	ldr 	r3, =__pv_phys_offset
+	ldr 	r3, [r3]
+	mov 	r4, #PAGE_OFFSET
+	sub 	r3, r4, r3		@ r3 <= PAGE_OFFSET - PHYS_OFFSET
+	sub 	r1, r3			@ r1 <= physical address of current location
+
+	ldr	r3, =TABLE_INDEX_MASK
+	and 	r1, r3
+	ldr	r3, =TABLE_ENTRY
+	add 	r2, r1, r3		@ r2 <= table entry to save (0x800XXC02)
+	lsr 	r1, #18
+	add 	r1, r0			@ r1 <= trans-table entry address (phys)
+
+	ldr 	r3, =__pv_phys_offset
+	ldr 	r3, [r3]
+	mov 	r4, #PAGE_OFFSET
+	sub 	r3, r4, r3		@ r3 <= PHYS_OFFSET - PAGE_OFFSET
+	add	r1, r3			@ r1 <= trans-table entry address (virt)
+	ldr 	r8, [r1]		@ r8 <= previous entry to erase
+	str	r2, [r1]		@ we have access to pc 0x800X
+	dmb
+
+	sub	pc, r3			@ we jump to 800Xa address space
+					@ it is now safe to disable MMU
+
+	isb
+	dsb
+
+	/* core0 should wait for all core to be in an off state before
+	 * disabling the MMU. Currently, only core1 is checked.
+	 */
+core0_wait:
+	.equ 	CPU1_PWRSTST, 0xFA243804
+	ldr 	r3, =CPU1_PWRSTST
+	ldr	r3, [r3]
+	cmp	r3, #0				@ if state is not off
+	bne	core0_wait			@ check again
+
+	/* Cancel the SCU transition set beforehand */
+	/* copy from code after do_WFI -- erase all registers */
+	bl	omap4_get_sar_ram_base
+	mov	r8, r0
+	ldr	r9, [r8, #OMAP_TYPE_OFFSET]
+	cmp	r9, #0x1			@ Check for HS device
+	bne	1f
+	mov	r0, #SCU_PM_NORMAL
+	mov	r1, #0x00
+	stmfd   r13!, {r4-r12, r14}
+	ldr	r12, =SCU_POWER_SECURE_INDEX
+	dsb
+	smc	#0
+	dsb
+	ldmfd   r13!, {r4-r12, r14}
+	b	2f
+1:
+	bl	omap4_get_scu_base
+	mov	r1, #SCU_PM_NORMAL
+	bl	scu_power_mode
+2:
+	isb
+	dsb
+	/* ----- end ----- */
+
+	mrc 	p15, 0, r2, c1, c0, 0
+	and 	r2, #0xfffffffe
+	mcr	p15, 0, r2, c1, c0, 0	@ disabling MMU
+
+	@ restoring the previous value (does not work) TODO
+	//sub	r1, r3
+	//str 	r8, [r1]
+
+	b	omap4_cpu_resume	@ jump if core 0
+
+skip_mmuoff:
+#endif
 	bl	omap_do_wfi
 
 	/*
@@ -315,6 +423,14 @@ skip_scu_gp_clear:
 ENDPROC(omap4_cpu_suspend)
 
 /*
+ * To load POR which was saved in SAR RAM
+ */
+POR_params:
+	.word 	1, 0
+ppa_zero_params:
+	.word		0x0
+
+/*
  * ============================
  * == CPU resume entry point ==
  * ============================
@@ -327,6 +443,135 @@ ENDPROC(omap4_cpu_suspend)
  */
 
 ENTRY(omap4_cpu_resume)
+#ifdef CONFIG_FAST_SWITCH
+
+	.equ	fsw_base_phys,FSW_BASE
+	.equ	flag_value,FSW_FLAG_VALUE
+	.equ 	magic,ARM_ZIMAGE_MAGIC
+	.equ	blank_value,BLANK_VALUE
+
+	/*
+	 * Flag checking (mandatory for all cores)
+	 */
+	ldr 	r3, =fsw_base_phys	@ r3 = FSW_BASE
+	ldr 	r4, =flag_value
+
+	mrc     p15, 0, r0, c0, c0, 5	@ Get cpuID
+	ands 	r0, r0, #0xf
+	lsl 	r0, #2
+	add 	r0, r0, #FSW_FLAG	@ r0 = core flag offset
+
+	ldr 	r5, [r3, r0]		@ = core flag value
+	cmp	r4, r5
+	bne	skip_switch		@ if no flag, the core skips
+
+	/*
+	 * Assumption : FLAG is raised only if there is something to do.
+	 * Magic number must have been checked beforehand.
+	 * The resume mode will not go here, as the flag should have been disabled.
+	 */
+
+	/*
+	 * During boot mode or a suspend mode, suspend context will be saved
+	 * in current instance base. Only core0 will write the values.
+	 */
+	ldr 	r4, [r3, #FSW_CURR]
+	lsl 	r4, #FSW_INST_SHIFT
+	add 	r4, r4, r3		@ r4 = current instance base
+
+	mrc     p15, 0, r6, c0, c0, 5	@ Skip if not core0
+	ands 	r6, r6, #0x0f
+	bne 	end_backup
+
+	ldr 	r6, =blank_value
+	add	r5, r4, #FSW_INST_REGS 	@ = incremental address
+
+loop_backup:
+	ldr 	r7, [r5]		@ = address to backup
+	cmp 	r7, r6
+	beq 	end_backup
+	ldr 	r8, [r7]		@ = content
+	str 	r8, [r5, #4]		@ backup content
+	add	r5, r5, #8
+	b 	loop_backup
+end_backup:
+
+	/*
+	 * If boot mode, reset now.
+	 * If suspend mode, restore requested instance then jump
+	 * else, just skip
+	 */
+	ldr 	r5, [r3, #FSW_MODE]	@ = mode
+	cmp 	r5, #FSW_MODE_BOOT	@ if switch-booting, reset
+	beq	boot_switch
+
+	cmp 	r5, #FSW_MODE_SUSPEND
+	beq 	suspend_switch
+
+	b 	skip_switch
+
+suspend_switch:
+
+	ldr 	r5, [r3, #FSW_TARG]
+	lsl 	r5, #FSW_INST_SHIFT
+	add 	r4, r5, r3		@ r4 = requested instance base
+
+	mrc     p15, 0, r6, c0, c0, 5	@ Skip if not core0
+	ands 	r6, r6, #0x0f
+	bne 	end_restore
+
+	ldr 	r6, =blank_value
+	add	r5, r4, #FSW_INST_REGS 	@ = incremental address
+
+loop_restore:
+	ldr 	r7, [r5]		@ = address to restore
+	cmp 	r7, r6
+	beq 	end_restore
+	ldr 	r8, [r5, #4]		@ = content
+	str 	r8, [r7]		@ restore content to ram
+	add	r5, r5, #8
+	b 	loop_restore
+end_restore:
+
+	/*
+	 * r0 = flag offset
+	 * r3 = base address
+	 * r4 = requested instance base
+	 */
+	ldr 	r6,=blank_value
+	str 	r6, [r3, r0]		@ erase the core flag first (MUST)
+
+	mrc     p15, 0, r0, c0, c0, 5	@ Get cpuID
+	ands 	r0, r0, #0xf
+	lsl 	r0, #2
+	add 	r0, r0, #FSW_INST_JUMP	@ r0 = instance jump offset (0 for core0, 4 for core1)
+
+	ldr	r6, [r4, r0] 		@ = resume address
+
+	.equ 	addr, 0x4a306304
+	ldr 	r4, =addr
+	ldr 	r4, [r4]
+	add	r3, #0x60
+	str 	r4, [r3, r0]
+
+	mov 	pc, r6
+	/* should not arrive here */
+
+boot_switch:
+	/*
+	 * FLAG should not be reset if boot-switching
+	 */
+	dmb
+	.equ	prm_rstctrl, 0x4a307b00
+	ldr	r0, =prm_rstctrl
+	ldr	r1, [r0]
+	orr	r1, r1, #1
+	str	r1, [r0]
+	ldr	r1, [r0]
+	/* should not arrive here */
+	b 	boot_switch
+skip_switch:
+#endif
 	/*
 	 * CPU1 must check if CPU0 is alive/awaken.
 	 * if PL310 is OFF, MPUSS was OFF and CPU0 is still off,
