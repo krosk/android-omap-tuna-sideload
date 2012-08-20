@@ -531,7 +531,7 @@ static int fsa9480_detect_callback(struct otg_id_notifier_block *nb)
 	} else if (dev_type & DEV_JIG_MASK) {
 		if (!(nb_info->detect_set->mask & FSA9480_DETECT_JIG))
 			goto unhandled;
-		_detected(usbsw, FSA9480_DETECT_JIG);
+		_detected(usbsw, FSA9480_DETECT_UART);
 		goto handled;
 	} else if (dev_type & DEV_USB_OTG) {
 		if (!(nb_info->detect_set->mask & FSA9480_DETECT_USB_HOST))

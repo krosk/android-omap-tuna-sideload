@@ -323,7 +323,7 @@ void __init early_print(const char *str, ...)
 	va_end(ap);
 
 #ifdef CONFIG_DEBUG_LL
-	printascii(buf);
+	//printascii(buf);
 #endif
 	printk("%s", buf);
 }

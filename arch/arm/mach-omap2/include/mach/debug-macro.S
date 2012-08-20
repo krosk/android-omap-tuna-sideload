@@ -18,9 +18,9 @@
 #define UART_OFFSET(addr)	((addr) & 0x00ffffff)
 
 		.pushsection .data
-omap_uart_phys:	.word	0
-omap_uart_virt:	.word	0
-omap_uart_lsr:	.word	0
+omap_uart_phys:	.word	0x48020000
+omap_uart_virt:	.word	0xFA020000
+omap_uart_lsr:	.word	0x14
 		.popsection
 
 		/*
